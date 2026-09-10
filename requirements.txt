@@ -1,0 +1,35 @@
+# Runtime
+fastapi
+uvicorn[standard]
+sse-starlette
+
+# Configuration and validation
+pydantic
+pydantic-settings
+python-dotenv
+typing-extensions
+PyJWT
+
+# LangChain / LangGraph
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-text-splitters
+langchain-chroma
+langgraph
+langgraph-checkpoint-postgres
+dashscope
+
+# Storage
+chromadb
+sqlalchemy
+psycopg[binary,pool]
+
+# Mock data and HTTP clients
+faker
+httpx
+
+# Development and tests
+pytest
+pytest-asyncio
