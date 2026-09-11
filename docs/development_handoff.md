@@ -124,7 +124,7 @@ python scripts/ingest_knowledge.py --recreate
 | `app/tools/result.py` | 统一 `ToolResult`、`success()`、`failure()` 返回格式 |
 | `app/tools/schemas.py` | 暴露给模型的 Pydantic 参数模型 |
 | `app/tools/query_tools.py` | 面向订单 Agent 的只读工具 |
-| `app/tools/policy_tools.py` | RAG 政策检索与退款资格评估 |
+| `app/tools/policy_tools.py` | 退款资格评估；FAQ 检索不再包装为 Tool |
 | `app/tools/action_tools.py` | 面向受控售后节点的轻量工具适配层 |
 | `app/tools/__init__.py` | 公共工具构造函数导出 |
 
@@ -161,8 +161,9 @@ python scripts/ingest_knowledge.py --recreate
 
 | 工具 | 用途 |
 |---|---|
-| `search_policy` | 只接收查询文本；`k` 和 `topic` 由构造 `ToolContext` 时注入的 retriever 统一决定，并返回知识库片段和来源 |
 | `evaluate_refund` | 根据确定性规则评估订单是否可退款，不写库 |
+
+FAQ 知识库检索由 `faq_node` 直接调用 retriever，不再包装成 Agent tool。`policy_tools` 只保留确定性的退款资格评估能力。
 
 ### 3.4 退款规则
 
@@ -229,20 +230,64 @@ create_refund_draft
 
 同时，`build_action_tools()` 不再提供 `confirm_refund`。该函数只能由用户确认 `interrupt()` 恢复后的 LangGraph 节点直接调用 `refund_service.confirm_refund()`。
 
-## 4. 当前未完成模块和推荐接入方式
+## 4. 当前会话已完成的 Graph 与节点实现
 
-以下文件仍是占位实现，下一步应按此顺序开发：
+本次会话已经完成主图的基础路由和三个非售后分支。当前入口是 `app.graph.build_graph()`，运行时配置通过 `configurable` 注入，示例：
+
+```python
+graph = build_graph()
+result = graph.invoke(
+    {"messages": [HumanMessage(content="我的订单到哪里了？")]},
+    {
+        "configurable": {
+            "user_id": current_user.user_id,
+            "thread_id": thread_id,
+            "db_factory": SessionLocal,
+            "retriever": retriever,
+        }
+    },
+)
+```
+
+身份字段以运行时配置为准，模型输出和普通 graph input 不能覆盖认证的 `user_id`、`thread_id`。未注入数据库工厂时，图不会主动连接默认数据库；提供 `db_factory` 或 `tool_context` 后，`update_thread` 才会更新已有线程的 `last_message` 和状态。
+
+当前主图流程为：
+
+```text
+START -> hydrate_context -> classify_intent -> route_intent
+  -> faq       (RAG 检索 + LLM 回答 + sources)
+  -> order     (只读 Query Tools 的 ReAct Agent)
+  -> after_sale (当前为占位响应，不执行写操作)
+  -> fallback  (unknown、低置信度或异常)
+  -> finalize_response -> update_thread -> END
+```
+
+当前实现文件：
+
+| 文件 | 当前职责 |
+|---|---|
+| `app/llm.py` | 构造 OpenAI 兼容的 ChatOpenAI，也支持节点运行时注入模型 |
+| `app/nodes/common.py` | 解析运行时配置、构造 `ToolContext`、解析 Retriever |
+| `app/nodes/classify.py` | 结构化识别 `faq/order/after_sale/unknown`，低于 `INTENT_CONFIDENCE_THRESHOLD` 时进入 fallback |
+| `app/nodes/faq.py` | 直接调用 Retriever，生成答案并返回 `retrieved_context` 与 `sources` |
+| `app/nodes/order.py` | 仅绑定 `build_query_tools(ctx)` 的只读 ReAct Agent，并记录 `tool_events` |
+| `app/graph.py` | 主图组装、fallback、响应整理和线程索引更新 |
+| `graph_design/main.mmd` | 主图设计图 |
+| `graph_design/after_sale_placeholder.mmd` | 售后占位子图设计图 |
+
+FAQ 不使用 `policy_tools.search_policy`。该工具已经移除；`build_policy_tools(ctx)` 目前只返回 `evaluate_refund`，用于确定性的退款资格评估。
+
+## 5. 当前未完成模块和推荐接入方式
+
+以下文件仍是占位或未完成实现，下一步应按此顺序开发：
 
 | 文件 | 开发内容 |
 |---|---|
-| `app/nodes/classify.py` | 使用 LLM 结构化输出识别 faq/order/after_sale/ticket |
-| `app/nodes/faq.py` | 调 retriever 并基于来源片段生成回答 |
-| `app/nodes/order.py` | 创建 `ToolContext`，仅绑定 `build_query_tools(ctx)` 给 ReAct Agent |
 | `app/nodes/after_sale.py` | 创建退款草稿、调用 `interrupt()`、恢复后确认退款或创建工单 |
-| `app/graph.py` | 建立主图、条件路由、售后子图、PostgresSaver checkpointer |
+| `app/graph.py` | 接入真实售后子图和 PostgresSaver checkpointer；当前主图基础路由已完成 |
 | `app/main.py` | FastAPI lifespan、认证、聊天 SSE、恢复接口、管理员审批接口 |
 
-### 4.1 LangGraph 售后接入伪代码
+### 5.1 LangGraph 售后接入伪代码
 
 ```python
 # 创建退款草稿的确定性节点
@@ -265,7 +310,7 @@ if confirmed:
 
 注意：`interrupt()` 恢复时使用同一 `thread_id` 的图配置；不要把退款确认操作交给 ReAct Agent。
 
-### 4.2 FastAPI 管理端接入伪代码
+### 5.2 FastAPI 管理端接入伪代码
 
 ```python
 @router.get("/admin/refunds/pending")
@@ -292,13 +337,14 @@ def decide_refund(refund_id: str, body: DecisionBody, current_admin=Depends(requ
 
 当前 `Refund` 模型没有 `thread_id` 字段。管理员 API 恢复 LangGraph 时，需要从请求携带 thread_id、前端审批卡上下文或后续增加明确的退款-会话关联字段中获取。不要根据用户 ID 猜测唯一会话。
 
-## 5. 状态与接口约束
+## 6. 状态与接口约束
 
 `app/state.py` 已定义：
 
 ```text
 messages, thread_id, user_id, intent, intent_confidence, order_id,
-answer, retrieved_context, tool_events, refund_id, refund_amount,
+answer, retrieved_context, sources, tool_events, last_message,
+refund_id, refund_amount,
 pending_action, requires_user_confirmation, requires_supervisor_approval,
 error
 ```
@@ -318,9 +364,9 @@ context = ToolContext(
 
 默认数据库工厂采用惰性导入，测试注入 SQLite session factory 时不会因为导入时读取 PostgreSQL 配置而失败。
 
-## 6. 测试现状
+## 7. 测试现状
 
-已编写但在本次会话中未运行：`tests/test_tools.py`。
+`tests/test_tools.py` 已存在，但本次会话没有运行完整测试套件。
 
 覆盖范围：
 
@@ -332,25 +378,23 @@ context = ToolContext(
 - 大额退款挂起、线程状态变更和管理员批准。
 - 非管理员审批拒绝。
 
-本次会话仅执行过静态编译：
+本次会话执行过以下检查：
 
 ```powershell
-python -m compileall -q app tests
+python -m compileall -q app
 ```
 
-未执行 `pytest`。准备好依赖后可手动运行：
+另外验证了主图 fallback 执行、FAQ 节点的 Retriever/来源适配，以及运行时身份字段不能被 graph input 覆盖。未运行 `pytest`，也未完成 FastAPI/SSE 集成。
+
+未执行 `pytest`。准备好数据库和知识库依赖后可手动运行：
 
 ```powershell
 pytest -q tests/test_tools.py
 ```
 
-曾尝试做运行时 import 检查，但当前执行环境缺少 `langchain_core`，因此未继续运行测试或运行时验证。先安装项目依赖即可：
+当前虚拟环境已可导入 LangChain/LangGraph；本次未启动外部 PostgreSQL、Chroma 或 FastAPI 服务。
 
-```powershell
-pip install -r requirements.txt
-```
-
-## 7. 继续开发时的注意事项
+## 8. 继续开发时的注意事项
 
 1. 所有新增注释和文档字符串使用中文。
 2. 不要把 `user_id`、管理员标识、数据库 session 暴露为模型可填写的 tool 参数。
@@ -360,9 +404,9 @@ pip install -r requirements.txt
 6. 金额使用 `Decimal`；跨 API、SSE、Graph state 时使用字符串序列化。
 7. RAG 检索结果仅作为政策解释与来源引用，不能替代确定性退款资格判断。
 8. 管理员审批后恢复图前，必须可靠地获得原始 `thread_id`。
-9. 当前工作区 `.git` 目录不是可用的 Git 仓库，不能依赖 `git status` 或 `git diff` 获取变更记录；以本文和文件内容为准。
+9. `user_id`、`thread_id` 和数据库工厂必须从运行时配置注入；不要从模型输出或普通 graph input 信任这些字段。
 
-## 8. 快速阅读清单
+## 9. 快速阅读清单
 
 新会话建议按下列顺序阅读：
 

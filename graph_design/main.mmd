@@ -1,0 +1,17 @@
+flowchart TD
+    START([START]) --> hydrate[hydrate_context<br/>注入 user_id / thread_id / ToolContext]
+    hydrate --> classify[classify_intent<br/>LLM 结构化识别意图]
+    classify --> route{route_intent}
+
+    route -->|faq| faq[faq_node<br/>RAG 检索 + 生成答案]
+    route -->|order| order[order_agent<br/>ReAct + 只读查询工具]
+    route -->|after_sale| afterSale[after_sale_subgraph<br/>售后子图]
+    route -->|低置信度/异常| fallback[fallback_node<br/>澄清]
+
+    faq --> finalize[finalize_response<br/>整理 answer / sources / tool_events]
+    order --> finalize
+    afterSale --> finalize
+    fallback --> finalize
+
+    finalize --> persist[update_thread<br/>更新线程状态和 last_message]
+    persist --> END([END])

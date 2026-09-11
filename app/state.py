@@ -8,17 +8,17 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
 
-Intent = Literal["faq", "order", "after_sale"]
+Intent = Literal["faq", "order", "after_sale", "unknown"]
 AfterSaleAction = Literal["refund", "ticket"]
 PendingAction = Literal["user_confirm", "supervisor_approval"]
 
 
 class CustomerServiceState(TypedDict, total=False):
-    """Serializable graph state for one ``thread_id`` conversation.
+    """用于单个 ``thread_id`` 会话的可序列化图状态。
 
-    ``messages`` uses LangGraph's reducer so streaming/tool nodes can append
-    messages without overwriting earlier turns. Approval flags mirror the
-    ``threads`` table and are useful when the graph is suspended by HITL.
+    ``messages`` 使用 LangGraph 的 reducer，因此流式/工具节点可以追加
+    消息而不会覆盖之前的轮次。审批标志与 ``threads`` 表对应，
+    当图被 HITL（human-in-the-loop，人在环路）挂起时很有用。
     """
 
     messages: Annotated[list[AnyMessage], add_messages]
@@ -30,7 +30,9 @@ class CustomerServiceState(TypedDict, total=False):
     order_id: str
     answer: str
     retrieved_context: list[str]
+    sources: list[dict[str, Any]]
     tool_events: list[dict[str, Any]]
+    last_message: str
     refund_id: str
     refund_amount: float
     pending_action: PendingAction

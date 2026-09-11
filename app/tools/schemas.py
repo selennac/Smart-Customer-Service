@@ -25,10 +25,6 @@ class RefundIdArgs(BaseModel):
     refund_id: str = Field(min_length=3, max_length=64)
 
 
-class SearchPolicyArgs(BaseModel):
-    query: str = Field(min_length=2, max_length=500)
-
-
 class CreateTicketArgs(BaseModel):
     ticket_type: TicketType
     description: str = Field(min_length=5, max_length=2000)
@@ -45,7 +41,6 @@ __all__ = [
     "OrderIdArgs",
     "ListTicketsArgs",
     "RefundIdArgs",
-    "SearchPolicyArgs",
     "CreateTicketArgs",
     "EvaluateRefundArgs",
 ]
