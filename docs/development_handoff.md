@@ -22,6 +22,9 @@
 ```text
 DATABASE_URL
 CHECKPOINT_DATABASE_URL
+CHECKPOINT_POOL_MIN_SIZE=1
+CHECKPOINT_POOL_MAX_SIZE=10
+CHECKPOINT_POOL_TIMEOUT_SECONDS=5
 LLM_API_KEY
 LLM_BASE_URL
 LLM_MODEL
@@ -29,6 +32,13 @@ EMBEDDING_MODEL
 CHROMA_PERSIST_DIRECTORY
 KNOWLEDGE_BASE_PATH
 REFUND_APPROVAL_THRESHOLD=500
+DEMO_AUTH_ENABLED=true
+```
+
+Windows 下使用项目启动入口，以确保 psycopg 异步连接运行在兼容的事件循环上：
+
+```powershell
+.\.venv\Scripts\python.exe -m app.server
 ```
 
 ## 2. 已完成模块
@@ -103,28 +113,29 @@ refund / return_exchange / logistics / membership / faq
 python scripts/ingest_knowledge.py --recreate
 ```
 
-## 3. 本次会话完成的 Tools 与服务层设计
+## 3. Tools 与服务层设计
 
 ### 3.1 当前架构原则
 
 1. `services` 是业务规则和事务的唯一真相来源。
 2. `tools` 仅负责将 LangChain 的结构化调用适配到 service，不直接承载复杂 SQL 或状态迁移。
-3. 订单 ReAct Agent 只能获得只读查询工具。
-4. 售后写操作由受控的 LangGraph 节点调用；用户确认退款不暴露给通用 Agent。
+3. 统一客服 Agent 只获得 FAQ 检索和订单、物流、工单、退款状态查询工具。
+4. 售后写操作工具保留在 `action_tools`，当前不绑定到通用客服 Agent，待售后子图接入后由受控节点调用。
 5. 管理员审批不是 Agent tool，而是 FastAPI 管理端直接调用 service。
 6. `user_id`、`thread_id`、管理员身份不允许模型填写，必须由认证和运行时上下文注入。
 
 ### 3.2 工具基础设施
 
-新增目录和文件：
+工具目录和文件：
 
 | 文件 | 职责 |
 |---|---|
 | `app/tools/context.py` | `ToolContext`：当前用户、会话、角色、数据库工厂、检索器、当前时间和审批阈值 |
 | `app/tools/result.py` | 统一 `ToolResult`、`success()`、`failure()` 返回格式 |
 | `app/tools/schemas.py` | 暴露给模型的 Pydantic 参数模型 |
-| `app/tools/query_tools.py` | 面向订单 Agent 的只读工具 |
-| `app/tools/policy_tools.py` | 退款资格评估；FAQ 检索不再包装为 Tool |
+| `app/tools/query_tools.py` | 面向统一客服 Agent 的订单、物流、工单和退款状态只读工具 |
+| `app/tools/faq_tools.py` | 面向统一客服 Agent 的 FAQ 知识库检索工具 |
+| `app/tools/policy_tools.py` | 退款资格评估 |
 | `app/tools/action_tools.py` | 面向受控售后节点的轻量工具适配层 |
 | `app/tools/__init__.py` | 公共工具构造函数导出 |
 
@@ -141,7 +152,7 @@ python scripts/ingest_knowledge.py --recreate
 }
 ```
 
-建议把工具调用结果以精简摘要追加到 LangGraph state 的 `tool_events`，原始结构可作为 SSE 工具事件发给前端。
+统一客服 Agent 将工具调用结果以精简摘要追加到 LangGraph state 的 `tool_events`，FAQ 来源写入 `sources`。
 
 ### 3.3 查询与策略工具
 
@@ -163,7 +174,7 @@ python scripts/ingest_knowledge.py --recreate
 |---|---|
 | `evaluate_refund` | 根据确定性规则评估订单是否可退款，不写库 |
 
-FAQ 知识库检索由 `faq_node` 直接调用 retriever，不再包装成 Agent tool。`policy_tools` 只保留确定性的退款资格评估能力。
+FAQ 知识库检索由统一客服 Agent 调用 `search_faq` 工具完成。`policy_tools` 只保留确定性的退款资格评估能力，当前未绑定到通用客服 Agent。
 
 ### 3.4 退款规则
 
@@ -179,7 +190,7 @@ FAQ 知识库检索由 `faq_node` 直接调用 retriever，不再包装成 Agent
 
 ### 3.5 工单和退款事务服务
 
-新增：
+当前服务：
 
 | 文件 | 函数 | 调用方 |
 |---|---|---|
@@ -222,30 +233,25 @@ create_refund_draft
 
 管理员审批 service 会再次查询 `User.is_admin`，不只依赖 FastAPI 路由层鉴权。
 
-### 3.6 已移除的设计
+### 3.6 管理员审批边界
 
-`app/tools/approval_tools.py` 已删除。
+当前没有 `app/tools/approval_tools.py`，管理员审批不通过 Agent tool 暴露。
 
-原因：管理员在 `/admin` 的人工点击是明确的业务操作，不应通过 LLM tool call 触发。管理员审批应由 API 的管理员鉴权依赖确认身份后，直接调用 `refund_service`。
+管理员在 `/admin` 的人工点击是明确的业务操作，不应通过 LLM tool call 触发。管理员审批应由 API 的管理员鉴权依赖确认身份后，直接调用 `refund_service`。
 
 同时，`build_action_tools()` 不再提供 `confirm_refund`。该函数只能由用户确认 `interrupt()` 恢复后的 LangGraph 节点直接调用 `refund_service.confirm_refund()`。
 
-## 4. 当前会话已完成的 Graph 与节点实现
+## 4. Graph 与节点实现
 
-本次会话已经完成主图的基础路由和三个非售后分支。当前入口是 `app.graph.build_graph()`，运行时配置通过 `configurable` 注入，示例：
+主图由 FastAPI lifespan 调用 `app.graph.build_graph(checkpointer=...)` 编译一次，API
+统一通过 `ConversationService` 调用，不应在路由中临时编译。服务内部仍通过
+`configurable` 注入受信任的运行时配置：
 
 ```python
-graph = build_graph()
-result = graph.invoke(
-    {"messages": [HumanMessage(content="我的订单到哪里了？")]},
-    {
-        "configurable": {
-            "user_id": current_user.user_id,
-            "thread_id": thread_id,
-            "db_factory": SessionLocal,
-            "retriever": retriever,
-        }
-    },
+result = await conversation_service.run(
+    user_id=current_user.user_id,
+    thread_id=thread_id,
+    message="我的订单到哪里了？",
 )
 ```
 
@@ -254,38 +260,58 @@ result = graph.invoke(
 当前主图流程为：
 
 ```text
-START -> hydrate_context -> classify_intent -> route_intent
-  -> faq       (RAG 检索 + LLM 回答 + sources)
-  -> order     (只读 Query Tools 的 ReAct Agent)
-  -> after_sale (当前为占位响应，不执行写操作)
-  -> fallback  (unknown、低置信度或异常)
-  -> finalize_response -> update_thread -> END
+START -> hydrate_context -> customer_service_agent
+  -> 直接回复问候、能力咨询和非客服请求
+  -> search_faq / 只读 Query Tools（按需调用）
+  -> route_agent_result
+     -> finalize_response（正常回答）
+     -> fallback（模型/编排异常或空回答）
+  -> update_thread -> END
 ```
+
+通用 Agent 绑定 `search_faq` 和订单、物流、工单、退款状态查询工具，不绑定 `create_ticket`、`create_refund_draft` 等写工具。问候、能力咨询和非客服请求由 Agent 依据 `SystemMessage` 直接回复；模型或工具编排异常、空回答才进入 `fallback`。售后写操作待子图接入后由受控节点负责用户确认、主管审批和状态转换。
 
 当前实现文件：
 
 | 文件 | 当前职责 |
 |---|---|
 | `app/llm.py` | 构造 OpenAI 兼容的 ChatOpenAI，也支持节点运行时注入模型 |
-| `app/nodes/common.py` | 解析运行时配置、构造 `ToolContext`、解析 Retriever |
-| `app/nodes/classify.py` | 结构化识别 `faq/order/after_sale/unknown`，低于 `INTENT_CONFIDENCE_THRESHOLD` 时进入 fallback |
-| `app/nodes/faq.py` | 直接调用 Retriever，生成答案并返回 `retrieved_context` 与 `sources` |
-| `app/nodes/order.py` | 仅绑定 `build_query_tools(ctx)` 的只读 ReAct Agent，并记录 `tool_events` |
+| `app/nodes/common.py` | 解析运行时配置并构造 `ToolContext` |
+| `app/nodes/customer_service.py` | 统一客服 ReAct Agent；通过显式 `SystemMessage` 约束身份、范围和工具使用 |
+| `app/tools/faq_tools.py` | 将知识库检索封装为 `search_faq` 只读工具，并返回证据和来源 |
+| `app/tools/query_tools.py` | 当前用户的订单、物流、工单及退款状态只读查询工具 |
 | `app/graph.py` | 主图组装、fallback、响应整理和线程索引更新 |
+| `app/main.py` | FastAPI 应用入口；lifespan 管理 checkpoint 连接池、retriever 和已编译主图 |
+| `app/api/auth.py` | JWT 登录和当前用户鉴权依赖 |
+| `app/api/chat.py` | `/api/v1/threads/{thread_id}/runs` 普通调用和 `/stream` SSE 调用 |
+| `app/api/threads.py` | `/api/v1/threads` 会话创建、游标分页、摘要详情和消息历史接口 |
+| `app/api/schemas.py` | HTTP/SSE 的稳定 Pydantic 契约 |
+| `app/services/conversation_service.py` | 统一图调用、同会话串行化和公开流式事件转换 |
 | `graph_design/main.mmd` | 主图设计图 |
-| `graph_design/after_sale_placeholder.mmd` | 售后占位子图设计图 |
 
-FAQ 不使用 `policy_tools.search_policy`。该工具已经移除；`build_policy_tools(ctx)` 目前只返回 `evaluate_refund`，用于确定性的退款资格评估。
+`build_policy_tools(ctx)` 目前只返回 `evaluate_refund`，用于确定性的退款资格评估；该工具暂未绑定到通用客服 Agent。`action_tools` 仅供未来售后受控节点使用。
 
-## 5. 当前未完成模块和推荐接入方式
+### 4.7 会话摘要与消息历史 API
 
-以下文件仍是占位或未完成实现，下一步应按此顺序开发：
+`ThreadItem` 是会话索引项，只用于列表和摘要详情，字段包括状态、最后一条摘要和更新时间。
+前端打开某个会话时，使用独立接口读取 checkpoint 中的公开消息：
+
+```text
+GET /api/v1/threads/{thread_id}/messages
+```
+
+返回的 `messages` 只包含 `user` 和 `assistant` 两种角色；Agent 的 `ToolMessage`、工具参数和检索原文属于内部执行数据，不直接返回给前端。当前接口会返回该线程 checkpoint 中的完整公开消息历史。
+
+## 5. 未完成模块和推荐接入方式
+
+以下能力仍未接入当前主图，下一步应按此顺序开发：
 
 | 文件 | 开发内容 |
 |---|---|
-| `app/nodes/after_sale.py` | 创建退款草稿、调用 `interrupt()`、恢复后确认退款或创建工单 |
-| `app/graph.py` | 接入真实售后子图和 PostgresSaver checkpointer；当前主图基础路由已完成 |
-| `app/main.py` | FastAPI lifespan、认证、聊天 SSE、恢复接口、管理员审批接口 |
+| 售后子图 | `graph_design/after_sale.mmd` 已描述退款/工单分支；代码仍需创建退款草稿、调用 `interrupt()`、恢复后确认退款或创建工单 |
+| `app/graph.py` | 后续接入真实售后子图；主图当前已由 lifespan 使用 AsyncPostgresSaver 编译 |
+| 恢复与审批 API | 增加用户确认恢复、管理员待审批列表和审批决定接口 |
+| 前端 | 对接登录、聊天 SSE、会话列表和售后确认/审批交互 |
 
 ### 5.1 LangGraph 售后接入伪代码
 
@@ -342,14 +368,9 @@ def decide_refund(refund_id: str, body: DecisionBody, current_admin=Depends(requ
 `app/state.py` 已定义：
 
 ```text
-messages, thread_id, user_id, intent, intent_confidence, order_id,
-answer, retrieved_context, sources, tool_events, last_message,
-refund_id, refund_amount,
-pending_action, requires_user_confirmation, requires_supervisor_approval,
-error
+messages, thread_id, user_id, answer, sources, tool_events,
+last_message, error
 ```
-
-后续建议把 `refund_amount: float` 改为字符串，或只在业务层保留 `Decimal`、在状态/SSE 中序列化为字符串，避免金额精度问题。
 
 `ToolContext` 应由 API/节点按当前认证用户构造，例如：
 
@@ -366,33 +387,16 @@ context = ToolContext(
 
 ## 7. 测试现状
 
-`tests/test_tools.py` 已存在，但本次会话没有运行完整测试套件。
+当前工作区没有可由 pytest 收集的测试文件。本轮接口重构按要求未新增测试用例。
+最近一次非测试类检查结果：
 
-覆盖范围：
-
-- 订单归属隔离。
-- 物流轨迹排序。
-- 工单重复提交幂等。
-- 小额退款草稿、用户确认与完成。
-- 超过七天退款拒绝。
-- 大额退款挂起、线程状态变更和管理员批准。
-- 非管理员审批拒绝。
-
-本次会话执行过以下检查：
-
-```powershell
-python -m compileall -q app
+```text
+python -m compileall -q app 通过
+OpenAPI schema 生成通过，共 7 个公开路径
+SSE 事件过滤与完成事件的内联冒烟检查通过
 ```
 
-另外验证了主图 fallback 执行、FAQ 节点的 Retriever/来源适配，以及运行时身份字段不能被 graph input 覆盖。未运行 `pytest`，也未完成 FastAPI/SSE 集成。
-
-未执行 `pytest`。准备好数据库和知识库依赖后可手动运行：
-
-```powershell
-pytest -q tests/test_tools.py
-```
-
-当前虚拟环境已可导入 LangChain/LangGraph；本次未启动外部 PostgreSQL、Chroma 或 FastAPI 服务。
+本机 PostgreSQL 5432 端口当前不可达，因此认证、真实 checkpoint 生命周期、聊天和知识库检索尚未进行端到端验证。
 
 ## 8. 继续开发时的注意事项
 
@@ -415,5 +419,5 @@ pytest -q tests/test_tools.py
 3. `app/state.py`、`app/db/models.py`（状态与领域模型）。
 4. `app/services/refund_service.py`、`app/services/policy_service.py`（关键业务规则）。
 5. `app/tools/`（Agent 工具边界）。
-6. `tests/test_tools.py`（当前行为预期）。
-7. 再进入 `app/nodes/`、`app/graph.py` 和 `app/main.py` 开发未完成模块。
+6. `tests/test_customer_service_agent.py`（统一客服 Agent 当前行为预期）。
+7. 再进入 `app/nodes/customer_service.py`、`app/graph.py`、`app/api/` 和 `frontend/` 开发未完成模块。

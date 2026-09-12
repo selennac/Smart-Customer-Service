@@ -106,7 +106,7 @@
 
 ```
 用户："我要退 ORD-xxx"
-→ POST /api/chat/stream
+→ POST /api/v1/threads/{thread_id}/runs/stream
 → 意图识别(after_sale) → 退款子图
 → 查订单 → 校验政策 → 计算金额 ¥89
 → interrupt(user_confirm) 图挂起

@@ -1,0 +1,26 @@
+flowchart TD
+    AS_START([after_sale_subgraph]) --> action_route{after_sale_action}
+
+    action_route -->|refund: 退款| refund_draft[create_refund_draft<br/>校验订单 + 退款政策]
+    action_route -->|ticket: 投诉/换货/其他售后| create_ticket[create_ticket<br/>事务性创建工单]
+
+    create_ticket --> as_result[售后结果]
+    refund_draft --> draft_check{草稿结果}
+
+    draft_check -->|订单不存在/政策拒绝/系统错误| as_result
+    draft_check -->|创建成功| user_interrupt{{interrupt<br/>等待用户确认退款}}
+
+    user_interrupt -->|用户拒绝| user_cancelled[用户取消退款]
+    user_interrupt -->|用户确认| confirm_refund[confirm_refund<br/>重新校验政策并落库]
+
+    user_cancelled --> as_result
+    confirm_refund --> confirm_check{确认结果}
+
+    confirm_check -->|小额退款完成| as_result
+    confirm_check -->|政策失效/状态异常| as_result
+    confirm_check -->|需要主管审批| supervisor_interrupt{{interrupt<br/>等待主管审批}}
+
+    supervisor_interrupt --> supervisor_resume[读取审批后的退款状态]
+    supervisor_resume --> as_result
+
+    as_result --> AS_END([售后子图结束])

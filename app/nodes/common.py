@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-from app.rag.retriever import get_retriever
 from app.tools.context import ToolContext
 
 
@@ -37,18 +35,6 @@ def build_tool_context(state: dict[str, Any], config: RunnableConfig | None = No
     )
 
 
-def resolve_retriever(ctx: ToolContext):
-    if ctx.retriever is not None:
-        return ctx.retriever
-    persist = os.getenv("CHROMA_PERSIST_DIRECTORY")
-    if not persist:
-        return None
-    try:
-        return get_retriever(persist_directory=persist)
-    except Exception:
-        return None
-
-
 def text_content(value: Any) -> str:
     content = getattr(value, "content", value)
     if isinstance(content, str):
@@ -61,4 +47,4 @@ def text_content(value: Any) -> str:
     return str(content)
 
 
-__all__ = ["build_tool_context", "resolve_retriever", "runtime_config", "text_content"]
+__all__ = ["build_tool_context", "runtime_config", "text_content"]

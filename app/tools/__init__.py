@@ -2,11 +2,13 @@
 
 from app.tools.action_tools import build_action_tools
 from app.tools.context import ToolContext
+from app.tools.faq_tools import build_faq_tools
 from app.tools.policy_tools import build_policy_tools
 from app.tools.query_tools import build_query_tools
 
 __all__ = [
     "ToolContext",
+    "build_faq_tools",
     "build_query_tools",
     "build_policy_tools",
     "build_action_tools",
