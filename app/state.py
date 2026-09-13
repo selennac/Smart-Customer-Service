@@ -23,6 +23,15 @@ class CustomerServiceState(TypedDict, total=False):
     tool_events: list[dict[str, Any]]
     last_message: str
     error: str
+    intent: str
+    after_sale_action: str
+    confirmation: str
+    order_id: str
+    reason: str
+    refund_id: str
+    refund: dict[str, Any]
+    after_sale_result: dict[str, Any]
+    pending_action: dict[str, Any]
 
 
 GraphState = CustomerServiceState

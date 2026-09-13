@@ -13,6 +13,8 @@ from sqlalchemy import select
 from app.db.models import Thread
 from app.nodes.common import build_tool_context, runtime_config, text_content
 from app.nodes.customer_service import customer_service_agent
+from app.nodes.classify import classify_intent, route_intent
+from app.nodes.after_sale import build_after_sale_graph
 from app.state import CustomerServiceState
 
 logger = logging.getLogger(__name__)
@@ -92,13 +94,21 @@ def build_graph(*, checkpointer: Any | None = None):
     """
     builder = StateGraph(CustomerServiceState)
     builder.add_node("hydrate_context", hydrate_context)
+    builder.add_node("classify_intent", classify_intent)
     builder.add_node("customer_service_agent", customer_service_agent)
+    builder.add_node("after_sale", build_after_sale_graph())
     builder.add_node("fallback", fallback_node)
     builder.add_node("finalize_response", finalize_response)
     builder.add_node("update_thread", update_thread)
 
     builder.add_edge(START, "hydrate_context")
-    builder.add_edge("hydrate_context", "customer_service_agent")
+    builder.add_edge("hydrate_context", "classify_intent")
+    builder.add_conditional_edges(
+        "classify_intent",
+        route_intent,
+        {"general": "customer_service_agent", "after_sale": "after_sale"},
+    )
+    builder.add_edge("after_sale", "update_thread")
     builder.add_conditional_edges(
         "customer_service_agent",
         route_agent_result,
@@ -116,6 +126,8 @@ __all__ = [
     "fallback_node",
     "finalize_response",
     "hydrate_context",
+    "classify_intent",
+    "route_intent",
     "route_agent_result",
     "update_thread",
 ]

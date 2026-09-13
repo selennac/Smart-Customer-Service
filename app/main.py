@@ -17,6 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import router as auth_router
+from app.api.admin import router as admin_router
 from app.api.chat import router as chat_router
 from app.api.error_handlers import register_exception_handlers
 from app.api.threads import router as threads_router
@@ -94,6 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_exception_handlers(app)
     api_router = APIRouter(prefix="/api/v1")
     api_router.include_router(auth_router)
+    api_router.include_router(admin_router)
     api_router.include_router(threads_router)
     api_router.include_router(chat_router)
     app.include_router(api_router)

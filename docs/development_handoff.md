@@ -147,7 +147,7 @@ python scripts/ingest_knowledge.py --recreate
     "code": "OK | NOT_FOUND | FORBIDDEN | POLICY_REJECTED | ...",
     "message": "给节点和前端展示的说明",
     "data": {},
-    "next_action": "none | user_confirm | supervisor_approval",
+    "next_action": "none | refund_confirmation | supervisor_approval",
     "event": None,
 }
 ```
@@ -327,9 +327,9 @@ with SessionLocal() as session, session.begin():
         approval_threshold=Decimal(os.environ["REFUND_APPROVAL_THRESHOLD"]),
     )
 
-# 命中 user_confirm 后：
-confirmed = interrupt({"kind": "refund_confirmation", "refund": result["data"]})
-if confirmed:
+# 命中 refund_confirmation 后：
+decision = interrupt({"kind": "refund_confirmation", "refund": result["data"]})
+if decision["decision"] == "confirm":
     with SessionLocal() as session, session.begin():
         result = refund_service.confirm_refund(...)
 ```

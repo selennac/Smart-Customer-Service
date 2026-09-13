@@ -46,6 +46,7 @@ def build_action_tools(ctx: ToolContext) -> list[BaseTool]:
                     return refund_service.create_refund_draft(
                         session,
                         user_id=ctx.user_id,
+                        thread_id=ctx.thread_id,
                         order_id=order_id,
                         reason=reason,
                         now=ctx.now(),

@@ -34,7 +34,6 @@ def create_ticket(
             Ticket.user_id == user_id,
             Ticket.order_id == order_id,
             Ticket.type == ticket_type,
-            Ticket.description == description,
             Ticket.status.in_((TicketStatus.OPEN, TicketStatus.IN_PROGRESS)),
         )
     )

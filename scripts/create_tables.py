@@ -38,6 +38,15 @@ def _checkpoint_url() -> str:
 
 def create_business_tables() -> list[str]:
     Base.metadata.create_all(bind=engine)
+    # 为已有项目数据库补充售后会话关联字段；新库由 create_all 直接创建。
+    with engine.begin() as connection:
+        connection.execute(text(
+            "ALTER TABLE refunds ADD COLUMN IF NOT EXISTS thread_id VARCHAR(128) "
+            "REFERENCES threads(thread_id)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_refunds_thread_id ON refunds (thread_id)"
+        ))
     return sorted(inspect(engine).get_table_names())
 
 

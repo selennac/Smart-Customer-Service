@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-NextAction = Literal["none", "user_confirm", "supervisor_approval"]
+NextAction = Literal["none", "refund_confirmation", "supervisor_approval"]
 
 
 class ToolResult(BaseModel):

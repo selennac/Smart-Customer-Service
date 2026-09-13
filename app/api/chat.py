@@ -35,13 +35,14 @@ async def run_conversation(
     _: Thread = Depends(get_owned_thread),
     service: ConversationService = Depends(get_conversation_service),
 ) -> ChatResponse:
-    result = await service.run(user_id=user.user_id, thread_id=thread_id, message=body.message)
+    result = await service.run(user_id=user.user_id, thread_id=thread_id, message=body.message, resume=body.resume)
     return ChatResponse(
         run_id=result.run_id,
         thread_id=result.thread_id,
         answer=result.answer,
         sources=result.sources,
         tool_events=result.tool_events,
+        pending_action=result.pending_action,
     )
 
 
@@ -58,6 +59,7 @@ async def stream_conversation(
             user_id=user.user_id,
             thread_id=thread_id,
             message=body.message,
+            resume=body.resume,
         ):
             yield _to_sse(event)
 

@@ -95,10 +95,17 @@ def get_current_user(
     return CurrentUser(user_id=user.user_id, name=user.name, is_admin=user.is_admin)
 
 
+def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有管理员可以执行此操作")
+    return user
+
+
 __all__ = [
     "CurrentUser",
     "create_access_token",
     "get_current_user",
+    "require_admin",
     "get_runtime_settings",
     "login",
     "router",

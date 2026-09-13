@@ -30,6 +30,7 @@ def refund_data(refund: Refund) -> dict[str, Any]:
     """将退款 ORM 实例转换为 API 与图状态可用的数据。"""
     return {
         "refund_id": refund.refund_id,
+        "thread_id": refund.thread_id,
         "order_id": refund.order_id,
         "amount": str(refund.amount),
         "reason": refund.reason,
@@ -43,6 +44,7 @@ def create_refund_draft(
     session: Session,
     *,
     user_id: str,
+    thread_id: str,
     order_id: str,
     reason: str,
     now: datetime,
@@ -74,17 +76,21 @@ def create_refund_draft(
             next_action=(
                 "supervisor_approval"
                 if _enum_value(existing.status) == RefundStatus.PENDING_SUPERVISOR.value
-                else "user_confirm"
+                else "refund_confirmation"
             ),
         )
 
-    refund = Refund(order_id=order_id, amount=order.total_amount, reason=reason.strip())
+    refund = Refund(thread_id=thread_id, order_id=order_id, amount=order.total_amount, reason=reason.strip())
     session.add(refund)
     session.flush()
+    thread = session.get(Thread, thread_id)
+    if thread is not None:
+        thread.status = ThreadStatus.PENDING_USER
+        thread.last_message = "退款申请等待用户确认"
     return success(
         refund_data(refund),
         message="退款申请已准备，请确认退款金额和原因",
-        next_action="user_confirm",
+        next_action="refund_confirmation",
     )
 
 
@@ -145,7 +151,39 @@ def confirm_refund(
         )
 
     refund.status = RefundStatus.COMPLETED
+    order.status = OrderStatus.COMPLETED
+    thread = session.get(Thread, thread_id)
+    if thread is not None:
+        thread.status = ThreadStatus.ACTIVE
     return success(refund_data(refund), message="小额退款已完成")
+
+
+def cancel_refund(
+    session: Session,
+    *,
+    user_id: str,
+    refund_id: str,
+) -> dict[str, Any]:
+    """取消待用户确认的退款草稿；调用方必须在事务中执行此函数。"""
+    refund = session.scalar(
+        select(Refund)
+        .join(Order, Refund.order_id == Order.order_id)
+        .where(Refund.refund_id == refund_id, Order.user_id == user_id)
+        .with_for_update()
+    )
+    if refund is None:
+        return failure("NOT_FOUND", "未找到该退款申请")
+    status = _enum_value(refund.status)
+    if status == RefundStatus.CANCELLED.value:
+        return success(refund_data(refund), code="IDEMPOTENT_REPLAY", message="退款申请已经取消")
+    if status != RefundStatus.PENDING_USER.value:
+        return failure("INVALID_STATE", "当前退款状态不能取消")
+    refund.status = RefundStatus.CANCELLED
+    if refund.thread_id:
+        thread = session.get(Thread, refund.thread_id)
+        if thread is not None and thread.status == ThreadStatus.PENDING_USER:
+            thread.status = ThreadStatus.ACTIVE
+    return success(refund_data(refund), message="已取消退款申请")
 
 
 def list_pending_refunds(session: Session, *, admin_user_id: str, limit: int = 50) -> dict[str, Any]:
@@ -191,6 +229,8 @@ def approve_refund(
     order = session.get(Order, refund.order_id)
     if decision == "approve":
         refund.status = RefundStatus.COMPLETED
+        if order is not None:
+            order.status = OrderStatus.COMPLETED
     else:
         refund.status = RefundStatus.REJECTED
         if order is not None and _enum_value(order.status) == OrderStatus.REFUNDING.value:
@@ -203,6 +243,7 @@ __all__ = [
     "refund_data",
     "create_refund_draft",
     "confirm_refund",
+    "cancel_refund",
     "list_pending_refunds",
     "approve_refund",
 ]

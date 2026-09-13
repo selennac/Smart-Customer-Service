@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.db.models import ThreadStatus
 from app.services.conversation_service import ConversationEventType
@@ -35,16 +35,39 @@ class TokenResponse(ApiModel):
 
 
 class ChatRequest(ApiModel):
-    message: str = Field(min_length=1, max_length=8000)
+    message: str | None = Field(default=None, min_length=1, max_length=8000)
+    resume: dict[str, Any] | None = None
 
     @field_validator("message")
     @classmethod
     def strip_message(cls, value: str) -> str:
+        if value is None:
+            return value
         value = value.strip()
         if not value:
-            print(123)
             raise ValueError("message 不能为空")
         return value
+
+    @field_validator("resume")
+    @classmethod
+    def validate_resume(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if value.get("kind") != "refund_confirmation":
+            raise ValueError("resume.kind 不合法")
+        if value.get("decision") not in {"confirm", "cancel"}:
+            raise ValueError("resume.decision 不合法")
+        return value
+
+    @model_validator(mode="after")
+    def validate_input(self) -> "ChatRequest":
+        if (self.message is None) == (self.resume is None):
+            raise ValueError("message 与 resume 必须二选一")
+        return self
+
+
+class AdminDecisionRequest(ApiModel):
+    decision: Literal["approve", "reject"]
 
 
 class SourceItem(ApiModel):
@@ -64,6 +87,7 @@ class ChatResponse(ApiModel):
     answer: str
     sources: list[SourceItem] = Field(default_factory=list)
     tool_events: list[ToolEventItem] = Field(default_factory=list)
+    pending_action: dict[str, Any] | None = None
 
 
 class MessageItem(ApiModel):
@@ -115,6 +139,7 @@ class ErrorResponse(ApiModel):
 
 
 __all__ = [
+    "AdminDecisionRequest",
     "ChatRequest",
     "ChatResponse",
     "ErrorBody",

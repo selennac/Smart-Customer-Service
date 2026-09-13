@@ -109,10 +109,10 @@
 → POST /api/v1/threads/{thread_id}/runs/stream
 → 意图识别(after_sale) → 退款子图
 → 查订单 → 校验政策 → 计算金额 ¥89
-→ interrupt(user_confirm) 图挂起
+→ interrupt(refund_confirmation) 图挂起
 → SSE 推送 interrupt 事件 → 前端渲染确认卡片
 → 用户点击"确认" → POST /api/threads/{id}/resume
-→ Command(resume=True) 恢复图 → 事务性落库 → SSE 推送结果
+→ Command(resume={"kind":"refund_confirmation","decision":"confirm"}) 恢复图 → 事务性落库 → SSE 推送结果
 ```
 
 **大额退款**：金额 > ¥500 时，用户确认后再次 `interrupt(supervisor)`，

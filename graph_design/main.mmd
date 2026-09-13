@@ -1,18 +1,26 @@
 flowchart TD
-    START([START]) --> hydrate[hydrate_context<br/>Inject user_id / thread_id / ToolContext]
-    hydrate --> agent[customer_service_agent<br/>SystemMessage + read-only tools]
+    START([START]) --> hydrate[hydrate_context<br/>从运行时配置注入 user_id / thread_id]
+    hydrate --> classify[classify_intent<br/>结构化 LLM 意图分类]
 
-    agent -->|FAQ| faqTool[search_faq]
-    agent -->|Order / logistics / status| queryTools[query tools]
-    faqTool --> agent
-    queryTools --> agent
+    classify --> route{route_intent}
+    route -->|general| agent[customer_service_agent<br/>ReAct 客服 Agent]
+    route -->|after_sale| after_sale[after_sale 子图<br/>退款 / 换货 / 投诉写操作]
 
-    agent --> route{route_agent_result}
-    route -->|Success| finalize[finalize_response]
-    route -->|Error / empty answer| fallback[fallback_node]
+    subgraph READ_ONLY[普通客服 Agent 的只读工具循环]
+        agent -->|政策 / 商品问题| faqTool[search_faq]
+        agent -->|订单 / 物流 / 工单 / 退款状态| queryTools[query tools]
+        faqTool --> agent
+        queryTools --> agent
+    end
+
+    agent --> agent_route{route_agent_result}
+    agent_route -->|有 answer 且无 error| finalize[finalize_response<br/>整理最终答复]
+    agent_route -->|error 或 answer 为空| fallback[fallback_node<br/>返回兜底答复]
     fallback --> finalize
 
-    finalize --> persist[update_thread<br/>Persist status and last_message]
+    after_sale --> persist[update_thread<br/>持久化 last_message]
+    finalize --> persist
     persist --> END([END])
 
-    writeTools[After-sale write tools<br/>Not exposed to the general agent]
+    classDef boundary fill:#eef6ff,stroke:#4a78a8,stroke-width:1px
+    class after_sale boundary

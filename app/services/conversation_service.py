@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Literal
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ ConversationEventType = Literal[
     "message.completed",
     "run.failed",
     "stream.done",
+    "run.interrupted",
 ]
 
 
@@ -37,6 +39,7 @@ class ConversationResult:
     answer: str
     sources: list[dict[str, Any]] = field(default_factory=list)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
+    pending_action: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,23 @@ class ConversationService:
         }
 
     @staticmethod
+    def _command_input(resume: dict[str, Any]) -> Command:
+        return Command(resume=resume)
+
+    @staticmethod
+    def _pending(snapshot: Any) -> dict[str, Any] | None:
+        values = getattr(snapshot, "values", {}) or {}
+        pending = values.get("pending_action")
+        if isinstance(pending, dict) and pending:
+            return pending
+        for task in getattr(snapshot, "tasks", ()) or ():
+            for interrupt in getattr(task, "interrupts", ()) or ():
+                value = getattr(interrupt, "value", None)
+                if isinstance(value, dict):
+                    return value
+        return None
+
+    @staticmethod
     def _result(values: dict[str, Any], *, run_id: str, thread_id: str) -> ConversationResult:
         return ConversationResult(
             run_id=run_id,
@@ -95,6 +115,7 @@ class ConversationService:
             answer=str(values.get("answer") or ""),
             sources=list(values.get("sources") or []),
             tool_events=list(values.get("tool_events") or []),
+            pending_action=values.get("pending_action") if isinstance(values.get("pending_action"), dict) and values.get("pending_action") else None,
         )
 
     @staticmethod
@@ -126,15 +147,24 @@ class ConversationService:
             )
         return ""
 
-    async def run(self, *, user_id: str, thread_id: str, message: str) -> ConversationResult:
+    async def run(self, *, user_id: str, thread_id: str, message: str | None = None, resume: dict[str, Any] | None = None) -> ConversationResult:
         run_id = uuid4().hex
         config = self._config(user_id=user_id, thread_id=thread_id)
         try:
             async with self._thread_locks[thread_id]:
-                values = await self._graph.ainvoke(self._input(message), config=config)
+                values = await self._graph.ainvoke(
+                    self._command_input(resume) if resume is not None else self._input(message or ""),
+                    config=config,
+                )
         except Exception as exc:
             logger.exception("Conversation run failed: run_id=%s thread_id=%s", run_id, thread_id)
             raise ConversationRunError(run_id) from exc
+        if not values.get("pending_action") and values.get("__interrupt__"):
+            interrupt_items = values.get("__interrupt__") or []
+            first = interrupt_items[0] if interrupt_items else None
+            value = getattr(first, "value", None)
+            if isinstance(value, dict):
+                values = {**values, "pending_action": value}
         return self._result(values, run_id=run_id, thread_id=thread_id)
 
     async def get_messages(
@@ -173,7 +203,8 @@ class ConversationService:
         *,
         user_id: str,
         thread_id: str,
-        message: str,
+        message: str | None = None,
+        resume: dict[str, Any] | None = None,
     ) -> AsyncIterator[ConversationEvent]:
         run_id = uuid4().hex
         config = self._config(user_id=user_id, thread_id=thread_id)
@@ -182,7 +213,7 @@ class ConversationService:
         try:
             async with self._thread_locks[thread_id]:
                 async for event in self._graph.astream_events(
-                    self._input(message),
+                    self._command_input(resume) if resume is not None else self._input(message or ""),
                     config=config,
                     version="v2",
                 ):
@@ -204,6 +235,7 @@ class ConversationService:
 
                 snapshot = await self._graph.aget_state(config)
                 result = self._result(snapshot.values, run_id=run_id, thread_id=thread_id)
+                pending = self._pending(snapshot)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -216,16 +248,24 @@ class ConversationService:
             )
             yield self._event("stream.done", run_id=run_id, thread_id=thread_id)
         else:
-            yield self._event(
-                "message.completed",
-                run_id=run_id,
-                thread_id=thread_id,
-                data={
-                    "answer": result.answer,
-                    "sources": result.sources,
-                    "tool_events": result.tool_events,
-                },
-            )
+            if pending:
+                yield self._event(
+                    "run.interrupted",
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    data={"answer": result.answer, **pending},
+                )
+            else:
+                yield self._event(
+                    "message.completed",
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    data={
+                        "answer": result.answer,
+                        "sources": result.sources,
+                        "tool_events": result.tool_events,
+                    },
+                )
             yield self._event("stream.done", run_id=run_id, thread_id=thread_id)
 
 

@@ -78,6 +78,7 @@ class RefundStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     COMPLETED = "completed"
+    CANCELLED = "cancelled"
 
 
 class ThreadStatus(str, Enum):
@@ -180,6 +181,7 @@ class Refund(Base):
     __tablename__ = "refunds"
 
     refund_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: _id("RFD"))
+    thread_id: Mapped[str | None] = mapped_column(ForeignKey("threads.thread_id"), index=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("orders.order_id"), index=True, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     reason: Mapped[str] = mapped_column(String(500), nullable=False)
