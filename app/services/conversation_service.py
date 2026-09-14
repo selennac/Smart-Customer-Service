@@ -11,6 +11,10 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
+from sqlalchemy import select
+
+from app.db.models import Thread
+from app.services.title_service import generate_title
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,7 @@ class ConversationResult:
     run_id: str
     thread_id: str
     answer: str
+    title: str | None = None
     sources: list[dict[str, Any]] = field(default_factory=list)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     pending_action: dict[str, Any] | None = None
@@ -49,6 +54,7 @@ class ConversationMessage:
     message_id: str
     role: Literal["user", "assistant"]
     content: str
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -63,10 +69,11 @@ class ConversationEvent:
 class ConversationService:
     """通过稳定的运行时配置和事件边界调用已编译主图。"""
 
-    def __init__(self, *, graph: Any, db_factory: Any, retriever: Any | None) -> None:
+    def __init__(self, *, graph: Any, db_factory: Any, retriever: Any | None, title_model: Any | None = None) -> None:
         self._graph = graph
         self._db_factory = db_factory
         self._retriever = retriever
+        self._title_model = title_model
         self._thread_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     def _config(self, *, user_id: str, thread_id: str) -> dict[str, Any]:
@@ -108,15 +115,48 @@ class ConversationService:
         return None
 
     @staticmethod
-    def _result(values: dict[str, Any], *, run_id: str, thread_id: str) -> ConversationResult:
+    def _result(values: dict[str, Any], *, run_id: str, thread_id: str, title: str | None = None) -> ConversationResult:
         return ConversationResult(
             run_id=run_id,
             thread_id=thread_id,
+            title=title,
             answer=str(values.get("answer") or ""),
             sources=list(values.get("sources") or []),
             tool_events=list(values.get("tool_events") or []),
             pending_action=values.get("pending_action") if isinstance(values.get("pending_action"), dict) and values.get("pending_action") else None,
         )
+
+    def _read_title(self, *, user_id: str, thread_id: str) -> str | None:
+        with self._db_factory() as session:
+            row = session.scalar(select(Thread.title).where(Thread.thread_id == thread_id, Thread.user_id == user_id))
+            return str(row) if row else None
+
+    def _save_title(self, *, user_id: str, thread_id: str, title: str) -> str | None:
+        with self._db_factory() as session:
+            with session.begin():
+                thread = session.scalar(
+                    select(Thread).where(Thread.thread_id == thread_id, Thread.user_id == user_id)
+                )
+                if thread is None:
+                    return None
+                if not thread.title:
+                    thread.title = title
+                return thread.title
+
+    async def _ensure_title(self, *, user_id: str, thread_id: str, messages: list[Any]) -> str | None:
+        """Generate and persist a title once the first user/assistant pair exists."""
+        existing = await asyncio.to_thread(self._read_title, user_id=user_id, thread_id=thread_id)
+        if existing:
+            return existing
+        generated = await asyncio.to_thread(generate_title, messages, model=self._title_model)
+        if not generated:
+            return None
+        return await asyncio.to_thread(self._save_title, user_id=user_id, thread_id=thread_id, title=generated)
+
+    async def ensure_title(self, *, user_id: str, thread_id: str, messages: list[Any]) -> str | None:
+        """Generate a title while loading an older thread, when needed."""
+        async with self._thread_locks[thread_id]:
+            return await self._ensure_title(user_id=user_id, thread_id=thread_id, messages=messages)
 
     @staticmethod
     def _event(
@@ -165,7 +205,12 @@ class ConversationService:
             value = getattr(first, "value", None)
             if isinstance(value, dict):
                 values = {**values, "pending_action": value}
-        return self._result(values, run_id=run_id, thread_id=thread_id)
+        title = await self._ensure_title(
+            user_id=user_id,
+            thread_id=thread_id,
+            messages=list(values.get("messages") or []),
+        )
+        return self._result(values, run_id=run_id, thread_id=thread_id, title=title)
 
     async def get_messages(
         self,
@@ -177,26 +222,68 @@ class ConversationService:
         config = self._config(user_id=user_id, thread_id=thread_id)
         async with self._thread_locks[thread_id]:
             snapshot = await self._graph.aget_state(config)
+            # Interrupts inside the after-sale subgraph checkpoint separately.
+            # Include that task state so its pending message survives reload.
+            snapshots = [snapshot]
+            for task in getattr(snapshot, "tasks", ()) or ():
+                task_config = getattr(task, "state", None)
+                if task_config:
+                    try:
+                        snapshots.append(await self._graph.aget_state(task_config))
+                    except Exception:
+                        logger.exception("Failed to read interrupted task state: thread_id=%s", thread_id)
 
         messages: list[ConversationMessage] = []
-        for index, message in enumerate(snapshot.values.get("messages", [])):
-            if isinstance(message, HumanMessage):
-                role: Literal["user", "assistant"] = "user"
-            elif isinstance(message, AIMessage):
-                role = "assistant"
-            else:
-                continue
-            content = self._chunk_text(message)
-            if not content:
-                continue
-            messages.append(
-                ConversationMessage(
-                    message_id=str(getattr(message, "id", None) or f"{thread_id}-{index}"),
-                    role=role,
-                    content=content,
+        seen_ids: set[str] = set()
+        for state_snapshot in snapshots:
+            for index, message in enumerate((getattr(state_snapshot, "values", {}) or {}).get("messages", [])):
+                if isinstance(message, HumanMessage):
+                    role: Literal["user", "assistant"] = "user"
+                elif isinstance(message, AIMessage):
+                    role = "assistant"
+                else:
+                    continue
+                content = self._chunk_text(message)
+                if not content:
+                    continue
+                message_id = str(getattr(message, "id", None) or f"{thread_id}-{index}")
+                if message_id in seen_ids:
+                    continue
+                seen_ids.add(message_id)
+                raw_sources = (getattr(message, "additional_kwargs", {}) or {}).get("sources", [])
+                sources = [source for source in raw_sources if isinstance(source, dict)] if isinstance(raw_sources, list) else []
+                messages.append(
+                    ConversationMessage(
+                        message_id=message_id,
+                        role=role,
+                        content=content,
+                        sources=sources,
+                    )
                 )
-            )
         return messages
+
+    async def get_pending_action(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the action currently waiting for a user or supervisor."""
+        config = self._config(user_id=user_id, thread_id=thread_id)
+        async with self._thread_locks[thread_id]:
+            snapshot = await self._graph.aget_state(config)
+        return self._pending(snapshot)
+
+    async def delete_thread(self, *, thread_id: str) -> None:
+        """Remove all LangGraph checkpoints for a thread after ownership is checked by the API."""
+        checkpointer = getattr(self._graph, "checkpointer", None)
+        if checkpointer is None:
+            return
+        delete = getattr(checkpointer, "adelete_thread", None)
+        if delete is None:
+            raise RuntimeError("configured checkpointer does not support thread deletion")
+        async with self._thread_locks[thread_id]:
+            await delete(thread_id)
 
     async def stream(
         self,
@@ -221,7 +308,10 @@ class ConversationService:
                         continue
                     metadata = event.get("metadata") or {}
                     # 只有主客服节点的公开回复可以转换为客户端 token。
-                    if metadata.get("langgraph_node") != "customer_service_agent":
+                    # ReAct 智能体是一个嵌套图，因此其模型事件
+                    # 可能会被标记为外层节点或嵌套的 ``agent`` 节点，
+                    # 具体取决于 LangGraph 的版本。
+                    if metadata.get("langgraph_node") not in {"customer_service_agent", "agent"}:
                         continue
                     chunk = (event.get("data") or {}).get("chunk")
                     content = self._chunk_text(chunk) if chunk is not None else ""
@@ -234,8 +324,14 @@ class ConversationService:
                         )
 
                 snapshot = await self._graph.aget_state(config)
-                result = self._result(snapshot.values, run_id=run_id, thread_id=thread_id)
+                values = snapshot.values or {}
                 pending = self._pending(snapshot)
+            title = await self._ensure_title(
+                user_id=user_id,
+                thread_id=thread_id,
+                messages=list(values.get("messages") or []),
+            )
+            result = self._result(values, run_id=run_id, thread_id=thread_id, title=title)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -253,7 +349,7 @@ class ConversationService:
                     "run.interrupted",
                     run_id=run_id,
                     thread_id=thread_id,
-                    data={"answer": result.answer, **pending},
+                    data={"answer": result.answer, "title": result.title, **pending},
                 )
             else:
                 yield self._event(
@@ -262,6 +358,7 @@ class ConversationService:
                     thread_id=thread_id,
                     data={
                         "answer": result.answer,
+                        "title": result.title,
                         "sources": result.sources,
                         "tool_events": result.tool_events,
                     },

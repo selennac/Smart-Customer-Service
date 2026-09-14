@@ -32,6 +32,7 @@ class TokenResponse(ApiModel):
     token_type: str = "bearer"
     user_id: str
     name: str
+    is_admin: bool = False
 
 
 class ChatRequest(ApiModel):
@@ -74,6 +75,7 @@ class SourceItem(ApiModel):
     source: str | None = None
     section: str | None = None
     topic: str | None = None
+    content: str | None = None
 
 
 class ToolEventItem(ApiModel):
@@ -84,6 +86,7 @@ class ToolEventItem(ApiModel):
 class ChatResponse(ApiModel):
     run_id: str
     thread_id: str
+    title: str | None = None
     answer: str
     sources: list[SourceItem] = Field(default_factory=list)
     tool_events: list[ToolEventItem] = Field(default_factory=list)
@@ -94,11 +97,14 @@ class MessageItem(ApiModel):
     message_id: str
     role: Literal["user", "assistant"]
     content: str
+    sources: list[SourceItem] = Field(default_factory=list)
 
 
 class ThreadMessagesResponse(ApiModel):
     thread_id: str
+    title: str | None = None
     messages: list[MessageItem]
+    pending_action: dict[str, Any] | None = None
 
 
 class StreamEventEnvelope(ApiModel):
@@ -112,6 +118,7 @@ class StreamEventEnvelope(ApiModel):
 
 class ThreadItem(ApiModel):
     thread_id: str
+    title: str | None = None
     status: ThreadStatus
     last_message: str | None
     created_at: datetime

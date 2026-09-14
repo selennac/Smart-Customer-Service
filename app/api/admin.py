@@ -35,6 +35,11 @@ async def decide_refund(
     db: Session = Depends(get_db),
     service: ConversationService = Depends(get_conversation_service),
 ) -> dict:
+    # ``require_admin`` uses this request-scoped session to load the current
+    # user, which can leave SQLAlchemy's autobegun read transaction active.
+    # End it before opening the explicit approval transaction below.
+    if db.in_transaction():
+        db.rollback()
     with db.begin():
         result = refund_service.approve_refund(
             db,

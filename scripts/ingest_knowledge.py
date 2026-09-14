@@ -25,12 +25,10 @@ def main() -> None:
     parser.add_argument("--recreate", action="store_true", help="Recreate the collection before indexing")
     args = parser.parse_args()
 
-    project_root = Path(__file__).parent.parent
-
-    documents = load_knowledge_documents(project_root / args.input, max_chars=args.max_chars, overlap=args.overlap)
+    documents = load_knowledge_documents(args.input, max_chars=args.max_chars, overlap=args.overlap)
     build_vector_store(
         documents,
-        persist_directory=project_root / args.persist,
+        persist_directory=args.persist,
         collection_name=args.collection,
         recreate=args.recreate,
     )

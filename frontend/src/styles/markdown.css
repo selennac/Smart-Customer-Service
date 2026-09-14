@@ -1,0 +1,15 @@
+.markdown-content { overflow-wrap: anywhere; }
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content > :last-child { margin-bottom: 0; }
+.markdown-content p { margin: 0 0 9px; }
+.markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4 { margin: 13px 0 7px; color: #f1f7f5; line-height: 1.35; }
+.markdown-content h1 { font-size: 17px; }
+.markdown-content h2 { font-size: 15px; }
+.markdown-content h3, .markdown-content h4 { font-size: 13px; }
+.markdown-content ul, .markdown-content ol { margin: 7px 0 10px; padding-left: 21px; }
+.markdown-content li { margin: 4px 0; }
+.markdown-content blockquote { margin: 9px 0; padding: 7px 11px; border-left: 2px solid var(--mint); color: var(--muted); background: rgba(140,224,207,.05); }
+.markdown-content pre { margin: 10px 0; padding: 11px 12px; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: rgba(0,0,0,.25); font: 11px/1.6 'DM Mono', monospace; }
+.markdown-content code { padding: 2px 4px; border-radius: 4px; color: #c7eee6; background: rgba(140,224,207,.1); font: 11px 'DM Mono', monospace; }
+.markdown-content pre code { padding: 0; background: transparent; }
+.markdown-content a { color: var(--mint); text-decoration: underline; text-underline-offset: 2px; }

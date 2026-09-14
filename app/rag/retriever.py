@@ -12,6 +12,8 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
+project_root = Path(__file__).parent.parent.parent
+
 
 def create_embeddings(
     *, model: str | None = None, api_key: str | None = None, base_url: str | None = None
@@ -44,7 +46,7 @@ def build_vector_store(
         raise ValueError("没有要索引的文档")
 
     embeddings = create_embeddings()
-    persist_path = str(persist_directory)
+    persist_path = str(project_root / persist_directory)
     store = Chroma(
         collection_name=collection_name,
         embedding_function=embeddings,
@@ -80,7 +82,7 @@ def get_retriever(
     store = Chroma(
         collection_name=collection_name,
         embedding_function=create_embeddings(),
-        persist_directory=str(persist_directory),
+        persist_directory=str(project_root / persist_directory),
     )
     search_kwargs: dict[str, object] = {"k": k}
     if topic:

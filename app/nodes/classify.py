@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 from app.llm import build_chat_model
 from app.nodes.common import runtime_config, text_content
 from app.state import CustomerServiceState
+import warnings
+
+warnings.filterwarnings("ignore", message=".*PydanticSerializationUnexpectedValue.*")
 
 
 class IntentDecision(BaseModel):

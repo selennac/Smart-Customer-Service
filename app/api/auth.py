@@ -63,6 +63,7 @@ def login(
         access_token=create_access_token(user, settings),
         user_id=user.user_id,
         name=user.name,
+        is_admin=user.is_admin,
     )
 
 

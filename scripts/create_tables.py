@@ -40,10 +40,15 @@ def create_business_tables() -> list[str]:
     Base.metadata.create_all(bind=engine)
     # 为已有项目数据库补充售后会话关联字段；新库由 create_all 直接创建。
     with engine.begin() as connection:
-        connection.execute(text(
-            "ALTER TABLE refunds ADD COLUMN IF NOT EXISTS thread_id VARCHAR(128) "
-            "REFERENCES threads(thread_id)"
-        ))
+        thread_columns = {column["name"] for column in inspect(connection).get_columns("threads")}
+        if "title" not in thread_columns:
+            connection.execute(text("ALTER TABLE threads ADD COLUMN title VARCHAR(200)"))
+        refund_columns = {column["name"] for column in inspect(connection).get_columns("refunds")}
+        if "thread_id" not in refund_columns:
+            connection.execute(text(
+                "ALTER TABLE refunds ADD COLUMN thread_id VARCHAR(128) "
+                "REFERENCES threads(thread_id)"
+            ))
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_refunds_thread_id ON refunds (thread_id)"
         ))

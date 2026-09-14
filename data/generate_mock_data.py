@@ -35,6 +35,9 @@ DEMO_USER_PREFIX = "DEMO-USR-"
 DEMO_ORDER_PREFIX = "DEMO-ORD-"
 DEMO_TRACKING_PREFIX = "DEMO-TRK-"
 
+# 管理员用户 ID（固定，方便登录测试）
+DEMO_ADMIN_USER_ID = f"{DEMO_USER_PREFIX}ADMIN"
+
 PRODUCTS: tuple[dict[str, Any], ...] = (
     {"sku_id": "DEMO-SKU-001", "name": "无线降噪耳机", "category": "数码", "price": Decimal("399.00")},
     {"sku_id": "DEMO-SKU-002", "name": "智能手环", "category": "数码", "price": Decimal("249.00")},
@@ -121,10 +124,10 @@ def generate_demo_data(
     seed: int = 20260908,
     replace: bool = False,
 ) -> dict[str, int]:
-    """Insert the demo dataset and return inserted entity counts.
+    """插入演示数据集并返回已插入实体的数量。
 
-    The function is intentionally session-based so tests can pass an in-memory
-    SQLite session without depending on the command-line environment.
+    该函数有意基于 session 实现，这样测试可以传入内存中的
+    SQLite session，而无需依赖命令行环境。
     """
     if user_count < 1:
         raise ValueError("user_count must be at least 1")
@@ -144,6 +147,17 @@ def generate_demo_data(
             session.add(product)
         products.append(product)
     session.flush()
+
+    # 先创建管理员用户（不参与普通用户的循环，避免命名/编号冲突）
+    admin = session.get(User, DEMO_ADMIN_USER_ID)
+    if admin is None:
+        admin = User(user_id=DEMO_ADMIN_USER_ID, name="管理员")
+        session.add(admin)
+    admin.name = "管理员"
+    admin.vip_level = VipLevel.GOLD
+    admin.is_admin = True
+    session.flush()
+    # ─────────────────────────────────────────────────────
 
     status_plan = _status_plan(orders_per_user)
     order_count = 0

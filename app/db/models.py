@@ -203,6 +203,8 @@ class Thread(Base):
 
     thread_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), index=True, nullable=False)
+    # Generated once from the first user/assistant exchange and kept stable.
+    title: Mapped[str | None] = mapped_column(String(200))
     status: Mapped[ThreadStatus] = mapped_column(_enum(ThreadStatus), default=ThreadStatus.ACTIVE, index=True,
                                                  nullable=False)
     last_message: Mapped[str | None] = mapped_column(Text)

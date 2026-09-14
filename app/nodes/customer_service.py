@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 CUSTOMER_SERVICE_PROMPT = """
-你是一个中文电商客服助手。
+你是一个白熊电商客服助手。
 
 你可以：
 1. 回答商品、平台政策和服务规则问题；
@@ -58,14 +58,16 @@ def customer_service_agent(
         ctx = build_tool_context(state, config)
         if not ctx.user_id:
             raise ValueError("user_id is required")
-        llm = build_chat_model(model=model or runtime_config(config).get("model"))
+        llm = build_chat_model(model=model or runtime_config(config).get("model"), streaming=True)
         agent = create_react_agent(
             llm,
             [*build_faq_tools(ctx), *build_query_tools(ctx)],
             prompt=SystemMessage(content=CUSTOMER_SERVICE_PROMPT),
         )
         existing = state.get("messages", [])
-        result = agent.invoke({"messages": existing})
+        # Pass the graph config through so nested model token events reach the
+        # outer ConversationService stream.
+        result = agent.invoke({"messages": existing}, config=config)
         all_messages = result.get("messages", [])
         new_messages = all_messages[len(existing):] if len(all_messages) >= len(existing) else all_messages
         answer = ""
@@ -82,11 +84,26 @@ def customer_service_agent(
                 if isinstance(payload, dict):
                     data = payload.get("data")
                     if isinstance(data, dict) and isinstance(data.get("sources"), list):
-                        sources.extend(data["sources"])
+                        documents = data.get("documents")
+                        for index, source in enumerate(data["sources"]):
+                            if not isinstance(source, dict):
+                                continue
+                            item = dict(source)
+                            if isinstance(documents, list) and index < len(documents):
+                                item["content"] = str(documents[index])
+                            sources.append(item)
             elif isinstance(message, AIMessage) and text_content(message).strip():
                 answer = text_content(message)
         if not answer and all_messages:
             answer = text_content(all_messages[-1])
+        if answer and sources:
+            for message in reversed(new_messages):
+                if isinstance(message, AIMessage) and text_content(message).strip() == answer.strip():
+                    message.additional_kwargs = {
+                        **(message.additional_kwargs or {}),
+                        "sources": sources,
+                    }
+                    break
         return {
             "messages": new_messages,
             "answer": answer,

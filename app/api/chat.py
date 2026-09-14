@@ -39,6 +39,7 @@ async def run_conversation(
     return ChatResponse(
         run_id=result.run_id,
         thread_id=result.thread_id,
+        title=result.title,
         answer=result.answer,
         sources=result.sources,
         tool_events=result.tool_events,
